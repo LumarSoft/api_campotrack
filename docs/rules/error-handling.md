@@ -4,14 +4,14 @@
 
 Always use NestJS built-in exceptions. Never throw generic `Error` objects.
 
-| Situation                        | Exception                  |
-|----------------------------------|----------------------------|
-| Resource not found               | `NotFoundException`        |
-| Duplicate / already exists       | `ConflictException`        |
-| Invalid credentials / token      | `UnauthorizedException`    |
-| Forbidden action                 | `ForbiddenException`       |
-| Invalid input (not caught by DTO)| `BadRequestException`      |
-| Unexpected server error          | `InternalServerErrorException` |
+| Situation                         | Exception                      |
+| --------------------------------- | ------------------------------ |
+| Resource not found                | `NotFoundException`            |
+| Duplicate / already exists        | `ConflictException`            |
+| Invalid credentials / token       | `UnauthorizedException`        |
+| Forbidden action                  | `ForbiddenException`           |
+| Invalid input (not caught by DTO) | `BadRequestException`          |
+| Unexpected server error           | `InternalServerErrorException` |
 
 ## Async error handling
 

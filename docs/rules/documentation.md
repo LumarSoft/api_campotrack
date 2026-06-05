@@ -28,7 +28,7 @@ Short description of what the endpoint does.
 **Request body**
 
 | Field | Type | Required | Constraints |
-|-------|------|----------|-------------|
+| ----- | ---- | -------- | ----------- |
 | ...   | ...  | ...      | ...         |
 
 \`\`\`json

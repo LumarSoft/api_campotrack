@@ -31,21 +31,22 @@ npx prisma studio        # visual DB browser
 
 ## Architecture
 
-**Framework:** NestJS v11 with TypeScript (target ES2023, `nodenext` module resolution).
+**Framework:** NestJS v11 with TypeScript (target ES2022, `CommonJS` module / `node` resolution).
 
-**Database:** PostgreSQL via Prisma v7. The Prisma client is generated to `generated/prisma` (not the default `node_modules/@prisma/client`) — always import from `../../generated/prisma` (or the relative path to that directory).
+**Database:** MySQL via Prisma v7 (using `@prisma/adapter-mariadb`). The Prisma client is generated to `generated/prisma` (gitignored — run `npx prisma generate` after cloning). Always import from `'generated/prisma/client'` (resolved via `baseUrl: "./"` in tsconfig).
 
 **Auth stack (packages installed, modules not yet scaffolded):** `@nestjs/jwt`, `@nestjs/passport`, `passport-jwt`, `bcrypt` — JWT-based authentication is the intended pattern.
 
-**Env vars:** `DATABASE_URL` is required for Prisma (loaded via `dotenv/config` in `prisma.config.ts`). Server port defaults to `3000` (`process.env.PORT`).
+**Env vars:** `DATABASE_URL` is required for Prisma (loaded via `dotenv/config` in `main.ts`). Server port defaults to `3000` (`process.env.PORT`). Copy `.env.example` → `.env` and fill in the values.
 
-**DTO validation:** `class-validator` + `class-transformer` are installed; use `ValidationPipe` globally when adding the first controller that accepts a request body.
+**DTO validation:** `ValidationPipe` is configured globally in `main.ts` with `whitelist`, `forbidNonWhitelisted`, and `transform`. Use `class-validator` decorators on all DTOs.
 
 **Module structure:** Standard NestJS feature modules — each domain gets its own directory under `src/` with `module`, `controller`, `service`, and `dto/` files. Register new modules in `AppModule`.
 
 **Code style:** Single quotes, trailing commas (enforced by Prettier). `noImplicitAny` is off; `strictNullChecks` is on.
 
 ## Rules
+
 See @docs/rules/architecture.md for module structure rules.
 See @docs/rules/database.md for Prisma and MySQL rules.
 See @docs/rules/validation.md for DTO and validation rules.

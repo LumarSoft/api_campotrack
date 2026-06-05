@@ -7,17 +7,18 @@ Use Conventional Commits:
 
 ## Types
 
-| Type       | When to use                                      |
-|------------|--------------------------------------------------|
-| `feat`     | New feature or endpoint                          |
-| `fix`      | Bug fix                                          |
-| `refactor` | Code change that doesn't fix a bug or add feature|
-| `chore`    | Tooling, dependencies, config changes            |
-| `docs`     | Documentation only                               |
-| `test`     | Adding or fixing tests                           |
-| `perf`     | Performance improvement                          |
+| Type       | When to use                                       |
+| ---------- | ------------------------------------------------- |
+| `feat`     | New feature or endpoint                           |
+| `fix`      | Bug fix                                           |
+| `refactor` | Code change that doesn't fix a bug or add feature |
+| `chore`    | Tooling, dependencies, config changes             |
+| `docs`     | Documentation only                                |
+| `test`     | Adding or fixing tests                            |
+| `perf`     | Performance improvement                           |
 
 ## Examples
+
 feat: add user registration endpoint
 fix: return 404 when user is not found
 refactor: extract password hashing to auth helper

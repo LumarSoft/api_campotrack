@@ -23,9 +23,11 @@ return this.prisma.user.findUnique({
 ## Migrations
 
 - Always run migrations with a descriptive name:
+
 ```bash
   npx prisma migrate dev --name add-refresh-token-to-user
 ```
+
 - Never modify an already-applied migration — always create a new one.
 - Run `npx prisma generate` after every schema change.
 - Never edit the `_prisma_migrations` table manually.
