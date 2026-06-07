@@ -17,5 +17,6 @@ const signOptions = { expiresIn: process.env.JWT_EXPIRES_IN ?? '7d' } as JwtSign
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],
+  exports: [AuthService],
 })
 export class AuthModule {}

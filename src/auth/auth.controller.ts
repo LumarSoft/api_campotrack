@@ -1,7 +1,8 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Patch, Post, UseGuards } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import { RegisterDto } from './dto/register.dto'
 import { LoginDto } from './dto/login.dto'
+import { UpdateProfileDto } from './dto/update-profile.dto'
 import { JwtAuthGuard } from './guards/jwt-auth.guard'
 import { CurrentUser } from './decorators/current-user.decorator'
 import { AuthenticatedUser } from './strategies/jwt.strategy'
@@ -29,5 +30,12 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@CurrentUser() user: AuthenticatedUser): Promise<AuthUser> {
     return this.authService.getProfile(user.id)
+  }
+
+  // Protected — updates the current user's name and/or password (info.md §13).
+  @Patch('profile')
+  @UseGuards(JwtAuthGuard)
+  updateProfile(@Body() dto: UpdateProfileDto, @CurrentUser() user: AuthenticatedUser): Promise<AuthUser> {
+    return this.authService.updateProfile(user.id, dto)
   }
 }
