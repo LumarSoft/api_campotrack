@@ -7,11 +7,433 @@ datasource db {
   provider = "mysql"
 }
 
+enum UserRole {
+  ADMIN
+  MEMBER
+  PRODUCER
+}
+
 model User {
   id        Int      @id @default(autoincrement())
   email     String   @unique
   password  String
   name      String?
+  role      UserRole @default(ADMIN)
+  // Account the user belongs to: the owning ADMIN's id. Self for an ADMIN,
+  // inherited from the inviter for MEMBER/PRODUCER (info.md §2). Nullable for
+  // legacy rows; code treats `accountId ?? id` as the account.
+  accountId Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // Reverse relations for ownership (records created by this user).
+  clients        Client[]
+  fields         Field[]
+  subdivisions   Subdivision[]
+  campaigns      Campaign[]
+  calendarEvents CalendarEvent[]
+  postponements  Postponement[]
+  fieldRecords   FieldRecord[]
+
+  // Team & permissions (info.md §11).
+  fieldAccess     UserFieldAccess[]
+  invitationsSent Invitation[]      @relation("InvitationInviter")
+  auditLogs       AuditLog[]
+
+  // Finance (info.md §9).
+  costs   Cost[]
+  incomes Income[]
+  quotes  Quote[]
+
+  @@index([accountId])
+}
+
+// Per-field access for MEMBER/PRODUCER (info.md §2, §11). An ADMIN sees every
+// field in its account; others see only the fields listed here.
+model UserFieldAccess {
+  userId  Int
+  user    User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fieldId Int
+  field   Field @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@id([userId, fieldId])
+  @@index([fieldId])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+// Invitation = the first way to create MEMBER/PRODUCER users (info.md §3, §11).
+model Invitation {
+  id          Int               @id @default(autoincrement())
+  email       String
+  role        UserRole
+  token       String            @unique
+  status      InvitationStatus  @default(PENDING)
+  accountId   Int
+  invitedById Int
+  invitedBy   User              @relation("InvitationInviter", fields: [invitedById], references: [id])
+  expiresAt   DateTime
+  createdAt   DateTime          @default(now())
+
+  fields InvitationField[]
+
+  @@index([accountId])
+}
+
+// Fields the invited user will get access to on accept.
+model InvitationField {
+  invitationId Int
+  invitation   Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  fieldId      Int
+  field        Field      @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@id([invitationId, fieldId])
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+// Audit trail: who changed what and when (info.md §11). Written by a global
+// interceptor on mutating domain requests.
+model AuditLog {
+  id        Int         @id @default(autoincrement())
+  accountId Int
+  actorId   Int
+  actor     User        @relation(fields: [actorId], references: [id])
+  actorRole UserRole
+  action    AuditAction
+  entity    String
+  entityId  Int?
+  metadata  Json?
+  createdAt DateTime    @default(now())
+
+  @@index([accountId, createdAt])
+}
+
+// Optional grouping of fields under a commercial client. A field may belong to
+// several clients (see FieldClient), and a client groups several fields.
+model Client {
+  id      Int     @id @default(autoincrement())
+  name    String
+  contact String?
+  notes   String?
+
+  fields FieldClient[]
+
+  // Audit / ownership (see permissions rules: admin > member/producer).
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Field {
+  id      Int    @id @default(autoincrement())
+  name    String
+  totalHa Float
+
+  clients      FieldClient[]
+  locations    Location[]
+  subdivisions Subdivision[]
+  campaigns    Campaign[]
+
+  userAccess       UserFieldAccess[]
+  invitationFields InvitationField[]
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Many-to-many join between fields and clients.
+model FieldClient {
+  fieldId  Int
+  clientId Int
+  field    Field  @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@id([fieldId, clientId])
+}
+
+// A field can span several real locations (localities). Subdivisions must be
+// geographically coherent with one of these locations (see info.md §6).
+model Location {
+  id       Int     @id @default(autoincrement())
+  fieldId  Int
+  field    Field   @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  locality String
+  lat      Float?
+  lng      Float?
+  ha       Float
+
+  subdivisions Subdivision[]
+}
+
+model Subdivision {
+  id         Int      @id @default(autoincrement())
+  fieldId    Int
+  field      Field    @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  locationId Int
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  name       String
+  ha         Float
+
+  campaigns Campaign[]
+  events    CalendarEvent[]
+  records   FieldRecord[]
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ----------------------------------------------------------------------------
+// Finance — costs, incomes and manual grain quotes (info.md §9). Hidden from the
+// producer. Provisional model pending §17 (cost vars, fixed/variable, Rosario).
+// ----------------------------------------------------------------------------
+
+enum CostCategory {
+  INPUTS
+  LABOR
+  LEASE
+  FREIGHT
+  FIELD_WORK
+  OTHER
+}
+
+enum Currency {
+  ARS
+  USD
+}
+
+enum CostType {
+  FIXED
+  VARIABLE
+}
+
+model Cost {
+  id         Int          @id @default(autoincrement())
+  campaignId Int
+  campaign   Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  category   CostCategory
+  amount     Float
+  currency   Currency
+  date       DateTime
+  costType   CostType?
+  note       String?
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([campaignId])
+}
+
+model Income {
+  id         Int      @id @default(autoincrement())
+  campaignId Int
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  cropId     Int
+  crop       Crop     @relation(fields: [cropId], references: [id])
+  quantity   Float
+  unitPrice  Float
+  currency   Currency
+  date       DateTime
+  note       String?
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([campaignId])
+}
+
+// Manual grain quote (no live Rosario integration yet). Account-scoped.
+model Quote {
+  id        Int      @id @default(autoincrement())
+  accountId Int
+  cropId    Int
+  crop      Crop     @relation(fields: [cropId], references: [id])
+  price     Float
+  currency  Currency
+  date      DateTime
+  source    String   @default("rosario")
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+
+  @@index([accountId, cropId])
+}
+
+// Crop catalog (editable in settings). Managed by admin, readable by all.
+model Crop {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  campaigns Campaign[]
+  incomes   Income[]
+  quotes    Quote[]
+}
+
+// Annual agricultural cycle, attached to a whole field or to a subdivision.
+model Campaign {
+  id             Int          @id @default(autoincrement())
+  fieldId        Int?
+  field          Field?       @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  subdivisionId  Int?
+  subdivision    Subdivision? @relation(fields: [subdivisionId], references: [id], onDelete: Cascade)
+  cycle          String
+  cropId         Int
+  crop           Crop         @relation(fields: [cropId], references: [id])
+  sowingDateEst  DateTime?
+  harvestDateEst DateTime?
+  ha             Float
+
+  events CalendarEvent[]
+  records FieldRecord[]
+  costs   Cost[]
+  incomes Income[]
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ----------------------------------------------------------------------------
+// Calendar — agronomic events with alarms and postponements (info.md §7)
+// ----------------------------------------------------------------------------
+
+enum EventType {
+  SOWING
+  FERTILIZATION
+  PHYTOSANITARY
+  HARVEST
+  EXPIRATION
+  DEADLINE
+  OTHER
+}
+
+enum EventStatus {
+  PLANNED
+  DONE
+  POSTPONED
+}
+
+enum AlarmType {
+  SAME_WEEK
+  DAY_BEFORE
+  SAME_DAY
+}
+
+enum PostponementCause {
+  WEATHER_DROUGHT
+  WEATHER_FROST
+  WEATHER_HAIL
+  WEATHER_HEAT
+  SOIL_MOISTURE
+  WATER_AVAILABILITY
+  FLOOD_RISK
+  FIRE_RISK
+  OWN_DECISION
+  SUPPLIER
+  OTHER
+}
+
+model CalendarEvent {
+  id                Int          @id @default(autoincrement())
+  campaignId        Int
+  campaign          Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subdivisionId     Int?
+  subdivision       Subdivision? @relation(fields: [subdivisionId], references: [id], onDelete: SetNull)
+  type              EventType
+  plannedDate       DateTime
+  actualDate        DateTime?
+  status            EventStatus  @default(PLANNED)
+  suggestedBySystem Boolean      @default(false)
+  note              String?
+
+  alarms        Alarm[]
+  postponements Postponement[]
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Alarm {
+  id      Int           @id @default(autoincrement())
+  eventId Int
+  event   CalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  type    AlarmType
+
+  @@unique([eventId, type])
+}
+
+model Postponement {
+  id           Int               @id @default(autoincrement())
+  eventId      Int
+  event        CalendarEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  previousDate DateTime
+  newDate      DateTime
+  cause        PostponementCause
+  note         String?
+  userId       Int
+  user         User              @relation(fields: [userId], references: [id])
+  createdAt    DateTime          @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Field records — operational log, offline-first (info.md §8). Subtype-specific
+// fields live in `data` (JSON); photos in `photos` (JSON array of URLs).
+// ----------------------------------------------------------------------------
+
+enum RecordSubtype {
+  SOWING
+  FERTILIZATION
+  PHYTOSANITARY
+  OBSERVATION
+  HARVEST
+}
+
+model FieldRecord {
+  id            Int           @id @default(autoincrement())
+  subtype       RecordSubtype
+  campaignId    Int
+  campaign      Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subdivisionId Int?
+  subdivision   Subdivision?  @relation(fields: [subdivisionId], references: [id], onDelete: SetNull)
+  recordDate    DateTime
+  data          Json
+  photos        Json?
+
+  // Offline sync: when the record was last edited on the client (last-write-wins).
+  clientUpdatedAt DateTime?
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
