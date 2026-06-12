@@ -18,7 +18,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } })
+    const existing = await this.prisma.user.findUnique({ where: { email: dto.email }, select: { id: true } })
     if (existing) throw new ConflictException('There is already an account with this email')
 
     const hashedPassword = await bcrypt.hash(dto.password, SALT_ROUNDS)
