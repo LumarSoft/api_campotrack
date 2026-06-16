@@ -5,8 +5,13 @@ export class CreateRecordDto {
   @IsEnum(RecordSubtype)
   subtype: RecordSubtype
 
+  // Records are anchored to a field; campaign and lote are optional context.
   @IsInt()
-  campaignId: number
+  fieldId: number
+
+  @IsOptional()
+  @IsInt()
+  campaignId?: number
 
   @IsOptional()
   @IsInt()

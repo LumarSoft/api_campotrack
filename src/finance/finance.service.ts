@@ -30,6 +30,7 @@ export interface CostResponse {
   note: string | null
   creatorRole: UserRole
   campaign: CampaignBrief
+  provider: { id: number; name: string } | null
 }
 
 export interface IncomeResponse {
@@ -81,6 +82,7 @@ const costSelect = {
   note: true,
   creatorRole: true,
   campaign: { select: campaignBriefSelect },
+  provider: { select: { id: true, name: true } },
 } as const
 
 const incomeSelect = {
@@ -116,9 +118,11 @@ export class FinanceService {
 
   async createCost(dto: CreateCostDto, user: AuthenticatedUser): Promise<CostResponse> {
     await this.assertCampaignInScope(dto.campaignId, user)
+    if (dto.providerId !== undefined) await this.assertProviderInScope(dto.providerId, user)
     const cost = await this.prisma.cost.create({
       data: {
         campaignId: dto.campaignId,
+        providerId: dto.providerId ?? null,
         category: dto.category,
         amount: dto.amount,
         currency: dto.currency,
@@ -135,9 +139,11 @@ export class FinanceService {
 
   async updateCost(id: number, dto: UpdateCostDto, user: AuthenticatedUser): Promise<CostResponse> {
     await this.findEditableCost(id, user)
+    if (dto.providerId !== undefined) await this.assertProviderInScope(dto.providerId, user)
     const cost = await this.prisma.cost.update({
       where: { id },
       data: {
+        providerId: dto.providerId,
         category: dto.category,
         amount: dto.amount,
         currency: dto.currency,
@@ -310,5 +316,13 @@ export class FinanceService {
   private async assertCropExists(cropId: number): Promise<void> {
     const crop = await this.prisma.crop.findUnique({ where: { id: cropId }, select: { id: true } })
     if (!crop) throw new BadRequestException('Crop not found')
+  }
+
+  private async assertProviderInScope(providerId: number, user: AuthenticatedUser): Promise<void> {
+    const provider = await this.prisma.provider.findFirst({
+      where: { id: providerId, creator: { accountId: this.scope.accountId(user) } },
+      select: { id: true },
+    })
+    if (!provider) throw new BadRequestException('Provider not found')
   }
 }

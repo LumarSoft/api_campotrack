@@ -25,6 +25,10 @@ export class CreateCampaignDto {
   @IsDateString()
   harvestDateEst?: string
 
+  @IsOptional()
+  @IsDateString()
+  endDateEst?: string
+
   @IsPositive()
   ha: number
 }

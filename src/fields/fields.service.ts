@@ -19,7 +19,7 @@ export interface SubdivisionResponse {
   id: number
   name: string
   ha: number
-  locationId: number
+  locationId: number | null
   creatorRole: UserRole
 }
 
@@ -42,6 +42,7 @@ interface CampaignSummary {
   subdivisionId: number | null
   sowingDateEst: Date | null
   harvestDateEst: Date | null
+  endDateEst: Date | null
 }
 
 export interface FieldListItem {
@@ -84,6 +85,7 @@ const campaignSelect = {
   subdivisionId: true,
   sowingDateEst: true,
   harvestDateEst: true,
+  endDateEst: true,
   crop: { select: { id: true, name: true } },
 } as const
 
@@ -104,17 +106,38 @@ export class FieldsService {
         totalHa: true,
         creatorRole: true,
         clients: { select: { client: { select: { id: true, name: true } } } },
-        _count: { select: { locations: true, subdivisions: true, campaigns: true } },
-        campaigns: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: { id: true, cycle: true, crop: { select: { name: true } } },
-        },
+        _count: { select: { locations: true, subdivisions: true } },
       },
     })
 
+    // Campaigns can hang off the field or one of its lotes; aggregate both so the
+    // count and "current campaign" reflect lote campaigns too.
+    const fieldIds = fields.map(field => field.id)
+    const campaigns = await this.prisma.campaign.findMany({
+      where: { OR: [{ fieldId: { in: fieldIds } }, { subdivision: { fieldId: { in: fieldIds } } }] },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        cycle: true,
+        fieldId: true,
+        crop: { select: { name: true } },
+        subdivision: { select: { fieldId: true } },
+      },
+    })
+
+    const byField = new Map<number, { count: number; latest: { id: number; cycle: string; cropName: string } | null }>()
+    for (const campaign of campaigns) {
+      const ownerFieldId = campaign.fieldId ?? campaign.subdivision?.fieldId
+      if (!ownerFieldId) continue
+      const entry = byField.get(ownerFieldId) ?? { count: 0, latest: null }
+      entry.count += 1
+      // Campaigns are ordered by createdAt desc, so the first seen is the latest.
+      if (!entry.latest) entry.latest = { id: campaign.id, cycle: campaign.cycle, cropName: campaign.crop.name }
+      byField.set(ownerFieldId, entry)
+    }
+
     return fields.map(field => {
-      const latest = field.campaigns[0]
+      const agg = byField.get(field.id)
       return {
         id: field.id,
         name: field.name,
@@ -123,8 +146,8 @@ export class FieldsService {
         clients: field.clients.map(c => c.client),
         locationCount: field._count.locations,
         subdivisionCount: field._count.subdivisions,
-        campaignCount: field._count.campaigns,
-        latestCampaign: latest ? { id: latest.id, cycle: latest.cycle, cropName: latest.crop.name } : null,
+        campaignCount: agg?.count ?? 0,
+        latestCampaign: agg?.latest ?? null,
       }
     })
   }
@@ -150,10 +173,18 @@ export class FieldsService {
           },
         },
         subdivisions: { orderBy: { name: 'asc' }, select: subdivisionSelect },
-        campaigns: { orderBy: { createdAt: 'desc' }, select: campaignSelect },
       },
     })
     if (!field) throw new NotFoundException('Field not found')
+
+    // Campaigns of the field include both whole-field ones (fieldId) and those
+    // attached to one of its lotes (subdivisionId) — the relation alone misses
+    // the latter, so we query both explicitly.
+    const campaigns = await this.prisma.campaign.findMany({
+      where: { OR: [{ fieldId: id }, { subdivision: { fieldId: id } }] },
+      orderBy: { createdAt: 'desc' },
+      select: campaignSelect,
+    })
 
     return {
       id: field.id,
@@ -163,7 +194,7 @@ export class FieldsService {
       clients: field.clients.map(c => c.client),
       locations: field.locations,
       subdivisions: field.subdivisions,
-      campaigns: field.campaigns,
+      campaigns,
     }
   }
 
@@ -230,12 +261,12 @@ export class FieldsService {
     user: AuthenticatedUser,
   ): Promise<FieldDetailResponse> {
     await this.assertFieldInScope(fieldId, user)
-    await this.assertLocationInField(fieldId, dto.locationId)
-    await this.assertSubdivisionFits(dto.locationId, dto.ha)
+    if (dto.locationId !== undefined) await this.assertLocationInField(fieldId, dto.locationId)
+    await this.assertSubdivisionsFitField(fieldId, dto.ha)
     await this.prisma.subdivision.create({
       data: {
         fieldId,
-        locationId: dto.locationId,
+        locationId: dto.locationId ?? null,
         name: dto.name,
         ha: dto.ha,
         createdById: user.id,
@@ -260,10 +291,9 @@ export class FieldsService {
     if (!subdivision) throw new NotFoundException('Subdivision not found')
     assertCanEdit(user, subdivision)
 
-    const locationId = dto.locationId ?? subdivision.locationId
     const ha = dto.ha ?? subdivision.ha
-    if (dto.locationId !== undefined) await this.assertLocationInField(fieldId, locationId)
-    await this.assertSubdivisionFits(locationId, ha, subdivisionId)
+    if (dto.locationId !== undefined) await this.assertLocationInField(fieldId, dto.locationId)
+    await this.assertSubdivisionsFitField(fieldId, ha, subdivisionId)
 
     await this.prisma.subdivision.update({
       where: { id: subdivisionId },
@@ -322,18 +352,20 @@ export class FieldsService {
     if (!location) throw new BadRequestException('The location does not belong to this field')
   }
 
-  // A location's subdivisions cannot exceed the real surface of that location.
-  private async assertSubdivisionFits(locationId: number, ha: number, excludeId?: number): Promise<void> {
-    const location = await this.prisma.location.findUnique({ where: { id: locationId }, select: { ha: true } })
-    if (!location) throw new BadRequestException('The location does not belong to this field')
+  // The lotes (subdivisions) of a field cannot add up to more than the field's
+  // total surface (info.md §6).
+  private async assertSubdivisionsFitField(fieldId: number, ha: number, excludeId?: number): Promise<void> {
+    const field = await this.prisma.field.findUnique({ where: { id: fieldId }, select: { totalHa: true } })
+    if (!field) throw new BadRequestException('Field not found')
 
     const aggregate = await this.prisma.subdivision.aggregate({
-      where: { locationId, id: excludeId ? { not: excludeId } : undefined },
+      where: { fieldId, id: excludeId ? { not: excludeId } : undefined },
       _sum: { ha: true },
     })
     const used = aggregate._sum.ha ?? 0
-    if (used + ha > location.ha) {
-      throw new BadRequestException('Subdivisions exceed the surface of their location')
+    // Allow a tiny float tolerance so e.g. 333.33 * 3 does not falsely overflow.
+    if (used + ha > field.totalHa + 0.001) {
+      throw new BadRequestException('Lotes exceed the total surface of the field')
     }
   }
 }
