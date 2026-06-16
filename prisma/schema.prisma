@@ -41,9 +41,10 @@ model User {
   auditLogs       AuditLog[]
 
   // Finance (info.md §9).
-  costs   Cost[]
-  incomes Income[]
-  quotes  Quote[]
+  costs     Cost[]
+  incomes   Income[]
+  quotes    Quote[]
+  providers Provider[]
 
   @@index([accountId])
 }
@@ -144,6 +145,7 @@ model Field {
   locations    Location[]
   subdivisions Subdivision[]
   campaigns    Campaign[]
+  records      FieldRecord[]
 
   userAccess       UserFieldAccess[]
   invitationFields InvitationField[]
@@ -182,9 +184,11 @@ model Location {
 model Subdivision {
   id         Int      @id @default(autoincrement())
   fieldId    Int
-  field      Field    @relation(fields: [fieldId], references: [id], onDelete: Cascade)
-  locationId Int
-  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  field      Field     @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  // Lotes belong directly to a field (info.md §6). The optional location is kept
+  // for backward compatibility but is no longer required to create a lote.
+  locationId Int?
+  location   Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
   name       String
   ha         Float
 
@@ -227,6 +231,8 @@ model Cost {
   id         Int          @id @default(autoincrement())
   campaignId Int
   campaign   Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  providerId Int?
+  provider   Provider?    @relation(fields: [providerId], references: [id], onDelete: SetNull)
   category   CostCategory
   amount     Float
   currency   Currency
@@ -241,6 +247,24 @@ model Cost {
   updatedAt   DateTime @updatedAt
 
   @@index([campaignId])
+  @@index([providerId])
+}
+
+// Suppliers / vendors of inputs and services. Account-scoped, managed from the
+// "Costos" section. A cost can optionally reference the provider it was paid to.
+model Provider {
+  id      Int     @id @default(autoincrement())
+  name    String
+  contact String?
+  notes   String?
+
+  costs Cost[]
+
+  createdById Int
+  creator     User     @relation(fields: [createdById], references: [id])
+  creatorRole UserRole
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Income {
@@ -283,10 +307,13 @@ model Quote {
   @@index([accountId, cropId])
 }
 
-// Crop catalog (editable in settings). Managed by admin, readable by all.
+// Crop catalog (editable from the "Costos" section). Managed by admin, readable
+// by all. The optional sowing window (months 1-12) feeds the recommendations.
 model Crop {
-  id   Int    @id @default(autoincrement())
-  name String @unique
+  id              Int    @id @default(autoincrement())
+  name            String @unique
+  sowingFromMonth Int?
+  sowingToMonth   Int?
 
   campaigns Campaign[]
   incomes   Income[]
@@ -305,6 +332,8 @@ model Campaign {
   crop           Crop         @relation(fields: [cropId], references: [id])
   sowingDateEst  DateTime?
   harvestDateEst DateTime?
+  // Estimated campaign end date (info.md §5). Shown when registering a campaign.
+  endDateEst     DateTime?
   ha             Float
 
   events CalendarEvent[]
@@ -420,8 +449,12 @@ enum RecordSubtype {
 model FieldRecord {
   id            Int           @id @default(autoincrement())
   subtype       RecordSubtype
-  campaignId    Int
-  campaign      Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  // Records are anchored to a field (info.md §8); the lote and campaign are
+  // optional context, no longer required to load a record.
+  fieldId       Int
+  field         Field         @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  campaignId    Int?
+  campaign      Campaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   subdivisionId Int?
   subdivision   Subdivision?  @relation(fields: [subdivisionId], references: [id], onDelete: SetNull)
   recordDate    DateTime

@@ -18,7 +18,8 @@ export interface RecordResponse {
   clientUpdatedAt: Date | null
   creatorRole: UserRole
   createdAt: Date
-  campaign: { id: number; cycle: string; cropName: string; fieldId: number | null; fieldName: string }
+  field: { id: number; name: string }
+  campaign: { id: number; cycle: string; cropName: string } | null
   subdivision: { id: number; name: string } | null
 }
 
@@ -31,23 +32,14 @@ const recordSelect = {
   clientUpdatedAt: true,
   createdAt: true,
   creatorRole: true,
-  campaign: {
-    select: {
-      id: true,
-      cycle: true,
-      fieldId: true,
-      crop: { select: { name: true } },
-      field: { select: { id: true, name: true } },
-      subdivision: { select: { field: { select: { id: true, name: true } } } },
-    },
-  },
+  field: { select: { id: true, name: true } },
+  campaign: { select: { id: true, cycle: true, crop: { select: { name: true } } } },
   subdivision: { select: { id: true, name: true } },
 } as const
 
 type RecordRow = Prisma.FieldRecordGetPayload<{ select: typeof recordSelect }>
 
 function toRecordResponse(row: RecordRow): RecordResponse {
-  const field = row.campaign.field ?? row.campaign.subdivision?.field ?? null
   return {
     id: row.id,
     subtype: row.subtype,
@@ -57,13 +49,10 @@ function toRecordResponse(row: RecordRow): RecordResponse {
     clientUpdatedAt: row.clientUpdatedAt,
     creatorRole: row.creatorRole,
     createdAt: row.createdAt,
-    campaign: {
-      id: row.campaign.id,
-      cycle: row.campaign.cycle,
-      cropName: row.campaign.crop.name,
-      fieldId: field?.id ?? null,
-      fieldName: field?.name ?? '—',
-    },
+    field: row.field,
+    campaign: row.campaign
+      ? { id: row.campaign.id, cycle: row.campaign.cycle, cropName: row.campaign.crop.name }
+      : null,
     subdivision: row.subdivision,
   }
 }
@@ -80,14 +69,10 @@ export class RecordsService {
     if (query.campaignId) where.campaignId = query.campaignId
     if (query.subdivisionId) where.subdivisionId = query.subdivisionId
     if (query.subtype) where.subtype = query.subtype
+    if (query.fieldId) where.fieldId = query.fieldId
 
-    const campaignClauses: Prisma.CampaignWhereInput[] = []
-    if (query.fieldId) {
-      campaignClauses.push({ OR: [{ fieldId: query.fieldId }, { subdivision: { fieldId: query.fieldId } }] })
-    }
-    const fieldClause = await this.scope.campaignFieldClause(user)
-    if (fieldClause) campaignClauses.push(fieldClause)
-    if (campaignClauses.length) where.campaign = { AND: campaignClauses }
+    const ids = await this.scope.accessibleFieldIds(user)
+    if (ids !== null) where.fieldId = query.fieldId && ids.includes(query.fieldId) ? query.fieldId : { in: ids }
 
     const records = await this.prisma.fieldRecord.findMany({
       where,
@@ -108,13 +93,15 @@ export class RecordsService {
 
   async create(dto: CreateRecordDto, user: AuthenticatedUser): Promise<RecordResponse> {
     const data = validateRecordData(dto.subtype, dto.data)
-    await this.assertCampaignExists(dto.campaignId, user)
-    if (dto.subdivisionId !== undefined) await this.assertSubdivisionExists(dto.subdivisionId)
+    await this.assertFieldExists(dto.fieldId, user)
+    if (dto.subdivisionId !== undefined) await this.assertSubdivisionInField(dto.subdivisionId, dto.fieldId)
+    if (dto.campaignId !== undefined) await this.assertCampaignExists(dto.campaignId, user)
 
     const record = await this.prisma.fieldRecord.create({
       data: {
         subtype: dto.subtype,
-        campaignId: dto.campaignId,
+        fieldId: dto.fieldId,
+        campaignId: dto.campaignId ?? null,
         subdivisionId: dto.subdivisionId ?? null,
         recordDate: new Date(dto.recordDate),
         data: data as Prisma.InputJsonValue,
@@ -138,10 +125,12 @@ export class RecordsService {
 
     const data = dto.data ? validateRecordData(existing.subtype, dto.data) : undefined
     if (dto.subdivisionId !== undefined) await this.assertSubdivisionExists(dto.subdivisionId)
+    if (dto.campaignId !== undefined) await this.assertCampaignExists(dto.campaignId, user)
 
     const record = await this.prisma.fieldRecord.update({
       where: { id },
       data: {
+        campaignId: dto.campaignId,
         subdivisionId: dto.subdivisionId,
         recordDate: dto.recordDate ? new Date(dto.recordDate) : undefined,
         data: data ? (data as Prisma.InputJsonValue) : undefined,
@@ -163,12 +152,21 @@ export class RecordsService {
     await this.prisma.fieldRecord.delete({ where: { id } })
   }
 
-  // Scoped `where` for a single record: account + accessible-fields (via campaign).
+  // Scoped `where` for a single record: account + accessible fields (direct).
   private async scopedWhere(id: number, user: AuthenticatedUser): Promise<Prisma.FieldRecordWhereInput> {
     const where: Prisma.FieldRecordWhereInput = { id, creator: { accountId: this.scope.accountId(user) } }
-    const fieldClause = await this.scope.campaignFieldClause(user)
-    if (fieldClause) where.campaign = { AND: [fieldClause] }
+    const ids = await this.scope.accessibleFieldIds(user)
+    if (ids !== null) where.fieldId = { in: ids }
     return where
+  }
+
+  // The field must exist within the user's account/access.
+  private async assertFieldExists(fieldId: number, user: AuthenticatedUser): Promise<void> {
+    const field = await this.prisma.field.findFirst({
+      where: { AND: [{ id: fieldId }, await this.scope.fieldWhere(user)] },
+      select: { id: true },
+    })
+    if (!field) throw new BadRequestException('Field not found')
   }
 
   // The campaign must exist within the user's account/access.
@@ -186,5 +184,14 @@ export class RecordsService {
       select: { id: true },
     })
     if (!subdivision) throw new BadRequestException('Subdivision not found')
+  }
+
+  // The lote must belong to the field the record is being filed under.
+  private async assertSubdivisionInField(subdivisionId: number, fieldId: number): Promise<void> {
+    const subdivision = await this.prisma.subdivision.findFirst({
+      where: { id: subdivisionId, fieldId },
+      select: { id: true },
+    })
+    if (!subdivision) throw new BadRequestException('Subdivision does not belong to this field')
   }
 }

@@ -3,6 +3,10 @@ import { IsArray, IsDateString, IsInt, IsObject, IsOptional, IsString } from 'cl
 export class UpdateRecordDto {
   @IsOptional()
   @IsInt()
+  campaignId?: number
+
+  @IsOptional()
+  @IsInt()
   subdivisionId?: number
 
   @IsOptional()

@@ -1,10 +1,11 @@
-import { IsInt, IsPositive, IsString, MinLength } from 'class-validator'
+import { IsInt, IsOptional, IsPositive, IsString, MinLength } from 'class-validator'
 
 export class CreateSubdivisionDto {
-  // The location this subdivision belongs to — its area must be coherent with
-  // the real surface of that location (info.md §6).
+  // Lotes belong directly to the field; the sum of their areas cannot exceed the
+  // field total (info.md §6). The location is optional, kept for compatibility.
+  @IsOptional()
   @IsInt()
-  locationId: number
+  locationId?: number
 
   @IsString()
   @MinLength(2)

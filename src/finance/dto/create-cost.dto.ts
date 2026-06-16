@@ -5,6 +5,11 @@ export class CreateCostDto {
   @IsInt()
   campaignId: number
 
+  // Optional supplier the cost was paid to (managed in the "Costos" section).
+  @IsOptional()
+  @IsInt()
+  providerId?: number
+
   @IsEnum(CostCategory)
   category: CostCategory
 

@@ -20,6 +20,7 @@ export interface CampaignResponse {
   subdivisionName: string | null
   sowingDateEst: Date | null
   harvestDateEst: Date | null
+  endDateEst: Date | null
 }
 
 const campaignSelect = {
@@ -31,6 +32,7 @@ const campaignSelect = {
   subdivisionId: true,
   sowingDateEst: true,
   harvestDateEst: true,
+  endDateEst: true,
   crop: { select: { id: true, name: true } },
   field: { select: { id: true, name: true } },
   subdivision: { select: { id: true, name: true, field: { select: { id: true, name: true } } } },
@@ -46,6 +48,7 @@ interface CampaignRow {
   subdivisionId: number | null
   sowingDateEst: Date | null
   harvestDateEst: Date | null
+  endDateEst: Date | null
   field: { id: number; name: string } | null
   subdivision: { id: number; name: string; field: { id: number; name: string } } | null
 }
@@ -92,6 +95,16 @@ export class CampaignsService {
   async create(dto: CreateCampaignDto, user: AuthenticatedUser): Promise<CampaignResponse> {
     await this.assertParentValid(dto.fieldId, dto.subdivisionId, user)
     await this.assertCropExists(dto.cropId)
+    await this.assertNoOverlap(
+      dto.fieldId ?? null,
+      dto.subdivisionId ?? null,
+      {
+        sowing: dto.sowingDateEst ? new Date(dto.sowingDateEst) : null,
+        harvest: dto.harvestDateEst ? new Date(dto.harvestDateEst) : null,
+        end: dto.endDateEst ? new Date(dto.endDateEst) : null,
+      },
+      user,
+    )
     const campaign = await this.prisma.campaign.create({
       data: {
         fieldId: dto.fieldId ?? null,
@@ -101,6 +114,7 @@ export class CampaignsService {
         ha: dto.ha,
         sowingDateEst: dto.sowingDateEst ? new Date(dto.sowingDateEst) : null,
         harvestDateEst: dto.harvestDateEst ? new Date(dto.harvestDateEst) : null,
+        endDateEst: dto.endDateEst ? new Date(dto.endDateEst) : null,
         createdById: user.id,
         creatorRole: user.role,
       },
@@ -113,6 +127,25 @@ export class CampaignsService {
     await this.findEditable(id, user)
     if (dto.cropId !== undefined) await this.assertCropExists(dto.cropId)
 
+    // Re-check overlap against the merged dates of the campaign being edited.
+    const current = await this.prisma.campaign.findUnique({
+      where: { id },
+      select: { fieldId: true, subdivisionId: true, sowingDateEst: true, harvestDateEst: true, endDateEst: true },
+    })
+    if (current) {
+      await this.assertNoOverlap(
+        current.fieldId,
+        current.subdivisionId,
+        {
+          sowing: dto.sowingDateEst ? new Date(dto.sowingDateEst) : current.sowingDateEst,
+          harvest: dto.harvestDateEst ? new Date(dto.harvestDateEst) : current.harvestDateEst,
+          end: dto.endDateEst ? new Date(dto.endDateEst) : current.endDateEst,
+        },
+        user,
+        id,
+      )
+    }
+
     const updated = await this.prisma.campaign.update({
       where: { id },
       data: {
@@ -121,6 +154,7 @@ export class CampaignsService {
         ha: dto.ha,
         sowingDateEst: dto.sowingDateEst ? new Date(dto.sowingDateEst) : undefined,
         harvestDateEst: dto.harvestDateEst ? new Date(dto.harvestDateEst) : undefined,
+        endDateEst: dto.endDateEst ? new Date(dto.endDateEst) : undefined,
       },
       select: campaignSelect,
     })
@@ -183,4 +217,74 @@ export class CampaignsService {
     const crop = await this.prisma.crop.findUnique({ where: { id: cropId }, select: { id: true } })
     if (!crop) throw new BadRequestException('Crop not found')
   }
+
+  /**
+   * Two campaigns cannot overlap in time in the same place: the same lote, or a
+   * whole-field campaign against any campaign of that field (info.md §6). Skipped
+   * when there isn't enough date info to compare.
+   */
+  private async assertNoOverlap(
+    fieldId: number | null,
+    subdivisionId: number | null,
+    dates: { sowing: Date | null; harvest: Date | null; end: Date | null },
+    user: AuthenticatedUser,
+    excludeId?: number,
+  ): Promise<void> {
+    const range = toDateRange(dates)
+    if (!range) return
+
+    let targetFieldId = fieldId
+    if (!targetFieldId && subdivisionId) {
+      const sub = await this.prisma.subdivision.findUnique({
+        where: { id: subdivisionId },
+        select: { fieldId: true },
+      })
+      targetFieldId = sub?.fieldId ?? null
+    }
+    if (!targetFieldId) return
+
+    const candidates = await this.prisma.campaign.findMany({
+      where: {
+        id: excludeId ? { not: excludeId } : undefined,
+        creator: { accountId: this.scope.accountId(user) },
+        OR: [{ fieldId: targetFieldId }, { subdivision: { fieldId: targetFieldId } }],
+      },
+      select: {
+        subdivisionId: true,
+        sowingDateEst: true,
+        harvestDateEst: true,
+        endDateEst: true,
+        cycle: true,
+        crop: { select: { name: true } },
+      },
+    })
+
+    for (const candidate of candidates) {
+      // Same place: same lote, or either side is a whole-field campaign.
+      const samePlace = subdivisionId == null || candidate.subdivisionId == null || candidate.subdivisionId === subdivisionId
+      if (!samePlace) continue
+      const other = toDateRange({
+        sowing: candidate.sowingDateEst,
+        harvest: candidate.harvestDateEst,
+        end: candidate.endDateEst,
+      })
+      if (!other) continue
+      if (range.start <= other.end && other.start <= range.end) {
+        throw new BadRequestException(
+          `Las fechas se superponen con la campaña ${candidate.crop.name} ${candidate.cycle} en el mismo lugar`,
+        )
+      }
+    }
+  }
+}
+
+/** Builds a [start, end] range from whichever campaign dates are available. */
+function toDateRange(dates: { sowing: Date | null; harvest: Date | null; end: Date | null }): {
+  start: Date
+  end: Date
+} | null {
+  const start = dates.sowing ?? dates.end ?? dates.harvest
+  const end = dates.end ?? dates.harvest ?? dates.sowing
+  if (!start || !end) return null
+  return start <= end ? { start, end } : { start: end, end: start }
 }

@@ -15,6 +15,7 @@ import { RecordsModule } from './records/records.module'
 import { TeamModule } from './team/team.module'
 import { AuditModule } from './audit/audit.module'
 import { FinanceModule } from './finance/finance.module'
+import { ProvidersModule } from './providers/providers.module'
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { FinanceModule } from './finance/finance.module'
     TeamModule,
     AuditModule,
     FinanceModule,
+    ProvidersModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
